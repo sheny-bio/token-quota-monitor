@@ -7,7 +7,3 @@ default_account = "78code"
 name = "78code"
 base_url = "https://www.78code.cc"
 token = "your-access-token-here"
-
-[routing]
-"www.78code.cc" = "78code"
-"78code.cc" = "78code"

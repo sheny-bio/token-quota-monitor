@@ -1,17 +1,11 @@
 use crate::error::{Error, Result};
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub general: General,
     pub accounts: Vec<Account>,
-    #[serde(default)]
-    pub routing: HashMap<String, String>,
-
-    #[serde(skip)]
-    pub path: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
@@ -34,13 +28,14 @@ fn default_cache_ttl() -> u64 { 300 }
 fn default_cache_dir() -> String { "~/.cache/tqm".to_string() }
 
 impl Config {
-    pub fn load(custom_path: Option<&PathBuf>) -> Result<Self> {
-        let path = if let Some(p) = custom_path {
-            p.clone()
-        } else if let Ok(p) = std::env::var("TQM_CONFIG") {
+    pub fn load() -> Result<Self> {
+        let path = if let Ok(p) = std::env::var("TQM_CONFIG") {
             PathBuf::from(p)
         } else {
-            Self::default_path()
+            dirs::config_dir()
+                .unwrap_or_else(|| PathBuf::from("~/.config"))
+                .join("tqm")
+                .join("config.toml")
         };
 
         if !path.exists() {
@@ -48,16 +43,8 @@ impl Config {
         }
 
         let content = std::fs::read_to_string(&path)?;
-        let mut config: Config = toml::from_str(&content)?;
-        config.path = path;
+        let config: Config = toml::from_str(&content)?;
         Ok(config)
-    }
-
-    pub fn default_path() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("~/.config"))
-            .join("tqm")
-            .join("config.toml")
     }
 
     pub fn cache_dir(&self) -> PathBuf {
@@ -70,32 +57,9 @@ impl Config {
         PathBuf::from(dir)
     }
 
-    pub fn find_account(&self, name: &str) -> Option<&Account> {
-        self.accounts.iter().find(|a| a.name == name)
-    }
-
-    /// Resolve account based on: --account flag > ANTHROPIC_BASE_URL > default_account
-    pub fn resolve_account(&self, override_name: Option<&str>) -> Result<&Account> {
-        // 1. CLI --account flag
-        if let Some(name) = override_name {
-            return self.find_account(name)
-                .ok_or_else(|| Error::AccountNotFound(name.to_string()));
-        }
-
-        // 2. ANTHROPIC_BASE_URL env
-        if let Ok(base_url) = std::env::var("ANTHROPIC_BASE_URL") {
-            if let Ok(parsed) = url::Url::parse(&base_url) {
-                if let Some(host) = parsed.host_str() {
-                    if let Some(account_name) = self.routing.get(host) {
-                        return self.find_account(account_name)
-                            .ok_or_else(|| Error::AccountNotFound(account_name.clone()));
-                    }
-                }
-            }
-        }
-
-        // 3. Fallback: default_account
-        self.find_account(&self.general.default_account)
-            .ok_or(Error::NoDefaultAccount)
+    pub fn resolve_account(&self) -> Result<&Account> {
+        let name = &self.general.default_account;
+        self.accounts.iter().find(|a| a.name == *name)
+            .ok_or_else(|| Error::AccountNotFound(name.clone()))
     }
 }

@@ -4,14 +4,12 @@ use std::fmt;
 pub enum Error {
     ConfigNotFound(String),
     AccountNotFound(String),
-    NoDefaultAccount,
     Api(reqwest::Error),
     ApiMessage(String),
     Cache(String),
     Io(std::io::Error),
     Json(serde_json::Error),
     Toml(toml::de::Error),
-    UrlParse(url::ParseError),
 }
 
 impl fmt::Display for Error {
@@ -19,14 +17,12 @@ impl fmt::Display for Error {
         match self {
             Error::ConfigNotFound(p) => write!(f, "Config not found: {p}"),
             Error::AccountNotFound(n) => write!(f, "Account not found: {n}"),
-            Error::NoDefaultAccount => write!(f, "No default account configured"),
             Error::Api(e) => write!(f, "API error: {e}"),
             Error::ApiMessage(m) => write!(f, "API error: {m}"),
             Error::Cache(m) => write!(f, "Cache error: {m}"),
             Error::Io(e) => write!(f, "IO error: {e}"),
             Error::Json(e) => write!(f, "JSON error: {e}"),
             Error::Toml(e) => write!(f, "TOML parse error: {e}"),
-            Error::UrlParse(e) => write!(f, "URL parse error: {e}"),
         }
     }
 }
@@ -44,9 +40,6 @@ impl From<serde_json::Error> for Error {
 }
 impl From<toml::de::Error> for Error {
     fn from(e: toml::de::Error) -> Self { Error::Toml(e) }
-}
-impl From<url::ParseError> for Error {
-    fn from(e: url::ParseError) -> Self { Error::UrlParse(e) }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
