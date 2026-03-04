@@ -90,6 +90,19 @@ fn render_widget(account_name: &str, entry: &config::CacheEntry) -> String {
 
 // ── Main ────────────────────────────────────────────────────────────────
 
+fn widget_error(e: &Error) -> String {
+    match e {
+        Error::ConfigNotFound(_) => "tqm: 未找到配置文件".into(),
+        Error::AccountNotFound(n) => format!("tqm: 账户 {n} 未配置"),
+        Error::Api(_) => "tqm: 网络请求失败".into(),
+        Error::ApiMessage(m) => format!("tqm: {m}"),
+        Error::Cache(_) => "tqm: 加载中...".into(),
+        Error::Io(_) => "tqm: 文件读写错误".into(),
+        Error::Json(_) => "tqm: 数据解析错误".into(),
+        Error::Toml(_) => "tqm: 配置格式错误".into(),
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
     let is_widget_mode = cli.command.is_none();
@@ -98,7 +111,7 @@ fn main() {
 
     if let Err(e) = result {
         if is_widget_mode {
-            println!("--");
+            println!("{}", widget_error(&e));
         } else {
             eprintln!("Error: {}", e);
             std::process::exit(1);
@@ -127,7 +140,7 @@ fn cmd_widget() -> Result<()> {
         }
         Err(_) => {
             spawn_background_refresh(&account_name);
-            println!("{}  --", account_name);
+            println!("{} 加载中...", account_name);
         }
     }
     Ok(())

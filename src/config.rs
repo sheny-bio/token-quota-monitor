@@ -14,8 +14,8 @@ pub struct Config {
 
 #[derive(Debug, Deserialize)]
 pub struct General {
-    #[serde(default = "default_cache_ttl")]
-    pub cache_ttl_seconds: u64,
+    #[serde(default = "default_refresh_interval")]
+    pub refresh_interval: u64,
     #[serde(default = "default_cache_dir")]
     pub cache_dir: String,
     pub default_account: String,
@@ -29,7 +29,7 @@ pub struct Account {
     pub token: String,
 }
 
-fn default_cache_ttl() -> u64 { 300 }
+fn default_refresh_interval() -> u64 { 300 }
 fn default_cache_dir() -> String { "~/.cache/tqm".to_string() }
 
 impl Config {
@@ -116,7 +116,7 @@ pub fn save_cache(
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64,
-        ttl_seconds: config.general.cache_ttl_seconds,
+        ttl_seconds: config.general.refresh_interval,
         account_name: account_name.to_string(),
         user,
         subscription,
