@@ -148,7 +148,7 @@ fn cmd_widget() -> Result<()> {
 
 fn cmd_refresh(account_name: &str) -> Result<()> {
     let config = Config::load()?;
-    let account = config.resolve_account()?;
+    let account = config.find_account(account_name)?;
     let client = api::ApiClient::new(account)?;
     let user_info = client.get_user_info()?;
     let subscription = client.get_subscription()?;

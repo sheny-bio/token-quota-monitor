@@ -10,6 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub struct Config {
     pub general: General,
     pub accounts: Vec<Account>,
+    #[serde(default)]
+    pub url_mapping: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,9 +65,21 @@ impl Config {
     }
 
     pub fn resolve_account(&self) -> Result<&Account> {
-        let name = &self.general.default_account;
-        self.accounts.iter().find(|a| a.name == *name)
-            .ok_or_else(|| Error::AccountNotFound(name.clone()))
+        // 优先通过 ANTHROPIC_BASE_URL 环境变量 + url_mapping 匹配账户
+        if let Ok(env_url) = std::env::var("ANTHROPIC_BASE_URL") {
+            for (domain, account_name) in &self.url_mapping {
+                if env_url.contains(domain) {
+                    return self.find_account(account_name);
+                }
+            }
+        }
+        // fallback 到 default_account
+        self.find_account(&self.general.default_account)
+    }
+
+    pub fn find_account(&self, name: &str) -> Result<&Account> {
+        self.accounts.iter().find(|a| a.name == name)
+            .ok_or_else(|| Error::AccountNotFound(name.to_string()))
     }
 }
 
