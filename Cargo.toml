@@ -1,0 +1,25 @@
+[package]
+name = "token-quota-monitor"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "tqm"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "cookies", "rustls-tls"] }
+thiserror = "2"
+dirs = "6"
+rpassword = "7"
+chrono = { version = "0.4", features = ["serde"] }
+url = "2"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true

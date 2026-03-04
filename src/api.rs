@@ -1,0 +1,248 @@
+use crate::config::Account;
+use crate::error::{Error, Result};
+use reqwest::blocking::Client;
+use reqwest::header::{HeaderMap, HeaderValue, COOKIE};
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
+
+#[derive(Debug)]
+pub struct LoginResponse {
+    pub session: String,
+    pub user_id: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiResponse<T> {
+    success: bool,
+    message: Option<String>,
+    data: Option<T>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LoginData {
+    id: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct UserData {
+    #[serde(default)]
+    pub quota: i64,
+    #[serde(default)]
+    pub used_quota: i64,
+    #[serde(default)]
+    pub request_count: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SubscriptionResponse {
+    subscriptions: Vec<SubscriptionWrapper>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    billing_preference: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SubscriptionWrapper {
+    subscription: SubscriptionData,
+}
+
+#[derive(Debug, Deserialize)]
+struct SubscriptionData {
+    id: u32,
+    plan_id: u32,
+    amount_total: i64,
+    amount_used: i64,
+    start_time: i64,
+    end_time: i64,
+    status: String,
+    #[serde(default)]
+    next_reset_time: i64,
+}
+
+// Public structs for cache storage
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct UserInfo {
+    pub wallet_quota: i64,
+    pub used_quota: i64,
+    pub request_count: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SubscriptionInfo {
+    pub id: u32,
+    pub plan_id: u32,
+    pub status: String,
+    pub amount_total: i64,
+    pub amount_used: i64,
+    pub amount_remain: i64,
+    pub start_time: i64,
+    pub end_time: i64,
+    pub next_reset_time: i64,
+}
+
+impl SubscriptionInfo {
+    pub fn usage_percent(&self) -> f64 {
+        if self.amount_total == 0 { return 0.0; }
+        (self.amount_used as f64 / self.amount_total as f64) * 100.0
+    }
+
+    pub fn remaining_days(&self) -> f64 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        ((self.end_time - now) as f64 / 86400.0).max(0.0)
+    }
+
+    pub fn to_usd(quota: i64) -> f64 {
+        quota as f64 / 500_000.0
+    }
+}
+
+pub struct ApiClient {
+    client: Client,
+    base_url: String,
+    session: String,
+    user_id: u32,
+}
+
+impl ApiClient {
+    pub fn new(account: &Account) -> Result<Self> {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()?;
+        Ok(Self {
+            client,
+            base_url: account.base_url.trim_end_matches('/').to_string(),
+            session: account.session.clone(),
+            user_id: account.user_id,
+        })
+    }
+
+    fn auth_headers(&self) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            COOKIE,
+            HeaderValue::from_str(&format!("session={}", self.session)).unwrap(),
+        );
+        headers.insert(
+            "New-Api-User",
+            HeaderValue::from_str(&self.user_id.to_string()).unwrap(),
+        );
+        headers
+    }
+
+    pub fn login(base_url: &str, username: &str, password: &str) -> Result<LoginResponse> {
+        let base_url = base_url.trim_end_matches('/');
+        let client = Client::builder()
+            .timeout(Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
+
+        let resp = client
+            .post(format!("{}/api/user/login", base_url))
+            .json(&serde_json::json!({
+                "username": username,
+                "password": password,
+            }))
+            .send()?;
+
+        // Extract session from Set-Cookie header
+        let session = resp
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .find_map(|v| {
+                let s = v.to_str().ok()?;
+                if s.starts_with("session=") {
+                    Some(
+                        s.split(';')
+                            .next()?
+                            .strip_prefix("session=")?
+                            .to_string(),
+                    )
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| Error::ApiMessage("No session cookie in response".to_string()))?;
+
+        let body: ApiResponse<LoginData> = resp.json()?;
+        if !body.success {
+            return Err(Error::ApiMessage(
+                body.message.unwrap_or_else(|| "Login failed".to_string()),
+            ));
+        }
+
+        let data = body.data.ok_or_else(|| Error::ApiMessage("No data in login response".to_string()))?;
+
+        Ok(LoginResponse {
+            session,
+            user_id: data.id,
+        })
+    }
+
+    pub fn get_user_info(&self) -> Result<UserInfo> {
+        let resp: ApiResponse<UserData> = self
+            .client
+            .get(format!("{}/api/user/self", self.base_url))
+            .headers(self.auth_headers())
+            .send()?
+            .json()?;
+
+        if !resp.success {
+            let msg = resp.message.unwrap_or_default();
+            if msg.contains("未登录") || msg.contains("session") {
+                return Err(Error::SessionExpired("".to_string()));
+            }
+            return Err(Error::ApiMessage(msg));
+        }
+
+        let data = resp.data.ok_or_else(|| Error::ApiMessage("No user data".to_string()))?;
+        Ok(UserInfo {
+            wallet_quota: data.quota,
+            used_quota: data.used_quota,
+            request_count: data.request_count,
+        })
+    }
+
+    pub fn get_subscription(&self) -> Result<SubscriptionInfo> {
+        let resp: ApiResponse<SubscriptionResponse> = self
+            .client
+            .get(format!("{}/api/subscription/self", self.base_url))
+            .headers(self.auth_headers())
+            .send()?
+            .json()?;
+
+        if !resp.success {
+            let msg = resp.message.unwrap_or_default();
+            if msg.contains("未登录") || msg.contains("session") {
+                return Err(Error::SessionExpired("".to_string()));
+            }
+            return Err(Error::ApiMessage(msg));
+        }
+
+        let data = resp.data.ok_or_else(|| Error::ApiMessage("No subscription data".to_string()))?;
+
+        // Find the active subscription
+        let sub = data
+            .subscriptions
+            .into_iter()
+            .find(|s| s.subscription.status == "active")
+            .or_else(|| None)
+            .ok_or_else(|| Error::ApiMessage("No active subscription found".to_string()))?;
+
+        let s = sub.subscription;
+        Ok(SubscriptionInfo {
+            id: s.id,
+            plan_id: s.plan_id,
+            status: s.status,
+            amount_total: s.amount_total,
+            amount_used: s.amount_used,
+            amount_remain: s.amount_total - s.amount_used,
+            start_time: s.start_time,
+            end_time: s.end_time,
+            next_reset_time: s.next_reset_time,
+        })
+    }
+}
