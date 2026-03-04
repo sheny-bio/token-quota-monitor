@@ -132,6 +132,93 @@ impl SubscriptionInfo {
     }
 }
 
+fn subscription_from_response(data: SubscriptionResponse, user_id: u32) -> SubscriptionInfo {
+    if let Some(sub) = data
+        .subscriptions
+        .into_iter()
+        .find(|s| s.subscription.status == "active")
+    {
+        let s = sub.subscription;
+        return SubscriptionInfo {
+            id: s.id,
+            user_id: s.user_id,
+            plan_id: s.plan_id,
+            status: s.status,
+            source: s.source,
+            amount_total: s.amount_total,
+            amount_used: s.amount_used,
+            amount_remain: s.amount_total - s.amount_used,
+            start_time: s.start_time,
+            end_time: s.end_time,
+            last_reset_time: s.last_reset_time,
+            next_reset_time: s.next_reset_time,
+            upgrade_group: s.upgrade_group,
+            prev_user_group: s.prev_user_group,
+            created_at: s.created_at,
+            updated_at: s.updated_at,
+        };
+    }
+
+    SubscriptionInfo {
+        id: 0,
+        user_id,
+        plan_id: 0,
+        status: "none".to_string(),
+        source: "none".to_string(),
+        amount_total: 0,
+        amount_used: 0,
+        amount_remain: 0,
+        start_time: 0,
+        end_time: 0,
+        last_reset_time: 0,
+        next_reset_time: 0,
+        upgrade_group: "".to_string(),
+        prev_user_group: "".to_string(),
+        created_at: 0,
+        updated_at: 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_build_empty_subscription_when_no_active() {
+        let data = SubscriptionResponse {
+            subscriptions: vec![SubscriptionWrapper {
+                subscription: SubscriptionData {
+                    id: 1,
+                    user_id: 694,
+                    plan_id: 2,
+                    amount_total: 500000,
+                    amount_used: 500000,
+                    start_time: 1,
+                    end_time: 2,
+                    status: "expired".to_string(),
+                    source: "order".to_string(),
+                    last_reset_time: 1,
+                    next_reset_time: 2,
+                    upgrade_group: "new-cc".to_string(),
+                    prev_user_group: "default".to_string(),
+                    created_at: 1,
+                    updated_at: 2,
+                },
+            }],
+            all_subscriptions: vec![],
+            billing_preference: None,
+        };
+
+        let sub = subscription_from_response(data, 694);
+
+        assert_eq!(sub.user_id, 694);
+        assert_eq!(sub.status, "none");
+        assert_eq!(sub.amount_total, 0);
+        assert_eq!(sub.amount_used, 0);
+        assert_eq!(sub.amount_remain, 0);
+    }
+}
+
 // ── HTTP 客户端 ──────────────────────────────────────────────────────────────
 
 pub struct ApiClient {
@@ -200,7 +287,6 @@ impl ApiClient {
     }
 
     /// 获取当前用户的活跃订阅，对应 GET /api/subscription/self
-    /// 取 subscriptions 列表中第一条 status=active 的记录
     pub fn get_subscription(&self) -> Result<SubscriptionInfo> {
         let resp: ApiResponse<SubscriptionResponse> = self
             .client
@@ -215,31 +301,6 @@ impl ApiClient {
         }
 
         let data = resp.data.ok_or_else(|| Error::ApiMessage("订阅数据为空".into()))?;
-
-        let sub = data
-            .subscriptions
-            .into_iter()
-            .find(|s| s.subscription.status == "active")
-            .ok_or(Error::NoActiveSubscription)?;
-
-        let s = sub.subscription;
-        Ok(SubscriptionInfo {
-            id: s.id,
-            user_id: s.user_id,
-            plan_id: s.plan_id,
-            status: s.status,
-            source: s.source,
-            amount_total: s.amount_total,
-            amount_used: s.amount_used,
-            amount_remain: s.amount_total - s.amount_used,
-            start_time: s.start_time,
-            end_time: s.end_time,
-            last_reset_time: s.last_reset_time,
-            next_reset_time: s.next_reset_time,
-            upgrade_group: s.upgrade_group,
-            prev_user_group: s.prev_user_group,
-            created_at: s.created_at,
-            updated_at: s.updated_at,
-        })
+        Ok(subscription_from_response(data, self.user_id))
     }
 }
