@@ -81,21 +81,14 @@ enum Commands {
 // ── Display ─────────────────────────────────────────────────────────────
 
 fn render_widget(account_name: &str, entry: &config::CacheEntry) -> String {
-    let sub = &entry.subscription;
-    let remain_usd = api::SubscriptionInfo::to_usd(sub.amount_remain);
-    let total_usd = api::SubscriptionInfo::to_usd(sub.amount_total);
-    let days = sub.remaining_days();
+    let wallet_usd = api::SubscriptionInfo::to_usd(entry.user.wallet_quota);
 
-    match sub.usage_percent() {
+    match entry.subscription.usage_percent() {
         Some(pct) => {
-            let filled = ((pct / 10.0).round() as usize).min(10);
-            let bar: String = "\u{2593}".repeat(filled) + &"\u{2591}".repeat(10 - filled);
-            format!(
-                "{} ${:.0}/${:.0} {} {:.0}% {:.0}d",
-                account_name, remain_usd, total_usd, bar, pct, days,
-            )
+            let remain_pct = 100.0 - pct;
+            format!("{} ${:.2} {:.0}%", account_name, wallet_usd, remain_pct)
         }
-        None => format!("{} 订阅额度数据异常(total=0), 瞅瞅咋回事~", account_name),
+        None => format!("{} ${:.2}", account_name, wallet_usd),
     }
 }
 
@@ -103,19 +96,17 @@ fn render_widget(account_name: &str, entry: &config::CacheEntry) -> String {
 
 fn widget_error(e: &Error) -> String {
     match e {
-        Error::ConfigNotFound(_) => "tqm: 配置文件离家出走了~".into(),
-        Error::AccountNotFound(n) => format!("tqm: 账户 '{n}' 查无此人~"),
-        Error::UrlMappingNotFound { url } => {
-            format!("tqm: URL({url}) 在 url_mapping 里找不到归宿~")
-        }
-        Error::TokenMissing(n) => format!("tqm: 账户 '{n}' 还没配 token 呢~"),
-        Error::NoActiveSubscription => "tqm: 没有活跃订阅, 续费了吗?".into(),
-        Error::Api(_) => "tqm: API 连不上, 网络开小差了~".into(),
-        Error::ApiMessage(m) => format!("tqm: API 说: {m}"),
-        Error::Cache(_) => "tqm: 首次加载中...".into(),
-        Error::Io(_) => "tqm: 文件系统闹脾气了~".into(),
-        Error::Json(_) => "tqm: 缓存数据坏掉了, 重新获取中...".into(),
-        Error::Toml(_) => "tqm: 配置文件格式不对, TOML 看不懂~".into(),
+        Error::ConfigNotFound(_) => "tqm:无配置".into(),
+        Error::AccountNotFound(n) => format!("tqm:{n}不存在"),
+        Error::UrlMappingNotFound { .. } => "tqm:URL未映射".into(),
+        Error::TokenMissing(n) => format!("tqm:{n}无token"),
+        Error::NoActiveSubscription => "tqm:无订阅".into(),
+        Error::Api(_) => "tqm:API错误".into(),
+        Error::ApiMessage(m) => format!("tqm:{m}"),
+        Error::Cache(_) => "tqm:加载中".into(),
+        Error::Io(_) => "tqm:IO错误".into(),
+        Error::Json(_) => "tqm:缓存损坏".into(),
+        Error::Toml(_) => "tqm:配置错误".into(),
     }
 }
 
