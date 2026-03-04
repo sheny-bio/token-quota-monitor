@@ -11,6 +11,9 @@ use std::fmt;
 pub enum Error {
     ConfigNotFound(String),
     AccountNotFound(String),
+    UrlMappingNotFound { url: String },
+    TokenMissing(String),
+    NoActiveSubscription,
     Api(reqwest::Error),
     ApiMessage(String),
     Cache(String),
@@ -24,6 +27,11 @@ impl fmt::Display for Error {
         match self {
             Error::ConfigNotFound(p) => write!(f, "Config not found: {p}"),
             Error::AccountNotFound(n) => write!(f, "Account not found: {n}"),
+            Error::UrlMappingNotFound { url } => {
+                write!(f, "ANTHROPIC_BASE_URL={url} does not match any url_mapping entry")
+            }
+            Error::TokenMissing(n) => write!(f, "Account '{n}' has no token configured"),
+            Error::NoActiveSubscription => write!(f, "No active subscription found"),
             Error::Api(e) => write!(f, "API error: {e}"),
             Error::ApiMessage(m) => write!(f, "API error: {m}"),
             Error::Cache(m) => write!(f, "Cache error: {m}"),
@@ -76,30 +84,38 @@ fn render_widget(account_name: &str, entry: &config::CacheEntry) -> String {
     let sub = &entry.subscription;
     let remain_usd = api::SubscriptionInfo::to_usd(sub.amount_remain);
     let total_usd = api::SubscriptionInfo::to_usd(sub.amount_total);
-    let pct = sub.usage_percent();
     let days = sub.remaining_days();
 
-    let filled = ((pct / 10.0).round() as usize).min(10);
-    let bar: String = "\u{2593}".repeat(filled) + &"\u{2591}".repeat(10 - filled);
-
-    format!(
-        "{} ${:.0}/${:.0} {} {:.0}% {:.0}d",
-        account_name, remain_usd, total_usd, bar, pct, days,
-    )
+    match sub.usage_percent() {
+        Some(pct) => {
+            let filled = ((pct / 10.0).round() as usize).min(10);
+            let bar: String = "\u{2593}".repeat(filled) + &"\u{2591}".repeat(10 - filled);
+            format!(
+                "{} ${:.0}/${:.0} {} {:.0}% {:.0}d",
+                account_name, remain_usd, total_usd, bar, pct, days,
+            )
+        }
+        None => format!("{} 订阅额度数据异常(total=0), 瞅瞅咋回事~", account_name),
+    }
 }
 
 // ── Main ────────────────────────────────────────────────────────────────
 
 fn widget_error(e: &Error) -> String {
     match e {
-        Error::ConfigNotFound(_) => "tqm: 未找到配置文件".into(),
-        Error::AccountNotFound(n) => format!("tqm: 账户 {n} 未配置"),
-        Error::Api(_) => "tqm: 网络请求失败".into(),
-        Error::ApiMessage(m) => format!("tqm: {m}"),
-        Error::Cache(_) => "tqm: 加载中...".into(),
-        Error::Io(_) => "tqm: 文件读写错误".into(),
-        Error::Json(_) => "tqm: 数据解析错误".into(),
-        Error::Toml(_) => "tqm: 配置格式错误".into(),
+        Error::ConfigNotFound(_) => "tqm: 配置文件离家出走了~".into(),
+        Error::AccountNotFound(n) => format!("tqm: 账户 '{n}' 查无此人~"),
+        Error::UrlMappingNotFound { url } => {
+            format!("tqm: URL({url}) 在 url_mapping 里找不到归宿~")
+        }
+        Error::TokenMissing(n) => format!("tqm: 账户 '{n}' 还没配 token 呢~"),
+        Error::NoActiveSubscription => "tqm: 没有活跃订阅, 续费了吗?".into(),
+        Error::Api(_) => "tqm: API 连不上, 网络开小差了~".into(),
+        Error::ApiMessage(m) => format!("tqm: API 说: {m}"),
+        Error::Cache(_) => "tqm: 首次加载中...".into(),
+        Error::Io(_) => "tqm: 文件系统闹脾气了~".into(),
+        Error::Json(_) => "tqm: 缓存数据坏掉了, 重新获取中...".into(),
+        Error::Toml(_) => "tqm: 配置文件格式不对, TOML 看不懂~".into(),
     }
 }
 

@@ -69,12 +69,25 @@ impl Config {
         if let Ok(env_url) = std::env::var("ANTHROPIC_BASE_URL") {
             for (domain, account_name) in &self.url_mapping {
                 if env_url.contains(domain) {
-                    return self.find_account(account_name);
+                    let account = self.find_account(account_name)?;
+                    return Self::validate_token(account);
                 }
             }
+            // URL 设了但 mapping 匹配不上 → 不能静默 fallback
+            if !self.url_mapping.is_empty() {
+                return Err(Error::UrlMappingNotFound { url: env_url });
+            }
         }
-        // fallback 到 default_account
-        self.find_account(&self.general.default_account)
+        // 没设 ANTHROPIC_BASE_URL 或 url_mapping 为空 → 用 default_account
+        let account = self.find_account(&self.general.default_account)?;
+        Self::validate_token(account)
+    }
+
+    fn validate_token(account: &Account) -> Result<&Account> {
+        if account.token.is_empty() {
+            return Err(Error::TokenMissing(account.name.clone()));
+        }
+        Ok(account)
     }
 
     pub fn find_account(&self, name: &str) -> Result<&Account> {

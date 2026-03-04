@@ -70,9 +70,9 @@ pub struct SubscriptionInfo {
 }
 
 impl SubscriptionInfo {
-    pub fn usage_percent(&self) -> f64 {
-        if self.amount_total == 0 { return 0.0; }
-        (self.amount_used as f64 / self.amount_total as f64) * 100.0
+    pub fn usage_percent(&self) -> Option<f64> {
+        if self.amount_total == 0 { return None; }
+        Some((self.amount_used as f64 / self.amount_total as f64) * 100.0)
     }
 
     pub fn remaining_days(&self) -> f64 {
@@ -124,11 +124,11 @@ impl ApiClient {
             .json()?;
 
         if !resp.success {
-            let msg = resp.message.unwrap_or_default();
+            let msg = resp.message.unwrap_or_else(|| "API 返回了错误但没说原因".into());
             return Err(Error::ApiMessage(msg));
         }
 
-        let data = resp.data.ok_or_else(|| Error::ApiMessage("No user data".to_string()))?;
+        let data = resp.data.ok_or_else(|| Error::ApiMessage("用户数据为空".into()))?;
         Ok(UserInfo {
             wallet_quota: data.quota,
             used_quota: data.used_quota,
@@ -145,18 +145,18 @@ impl ApiClient {
             .json()?;
 
         if !resp.success {
-            let msg = resp.message.unwrap_or_default();
+            let msg = resp.message.unwrap_or_else(|| "API 返回了错误但没说原因".into());
             return Err(Error::ApiMessage(msg));
         }
 
-        let data = resp.data.ok_or_else(|| Error::ApiMessage("No subscription data".to_string()))?;
+        let data = resp.data.ok_or_else(|| Error::ApiMessage("订阅数据为空".into()))?;
 
         // Find the active subscription
         let sub = data
             .subscriptions
             .into_iter()
             .find(|s| s.subscription.status == "active")
-            .ok_or_else(|| Error::ApiMessage("No active subscription found".to_string()))?;
+            .ok_or(Error::NoActiveSubscription)?;
 
         let s = sub.subscription;
         Ok(SubscriptionInfo {
