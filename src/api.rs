@@ -1,7 +1,7 @@
 use crate::config::Account;
 use crate::{Error, Result};
 use reqwest::blocking::Client;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, HeaderName};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -92,6 +92,7 @@ pub struct ApiClient {
     client: Client,
     base_url: String,
     token: String,
+    user_id: u32,
 }
 
 impl ApiClient {
@@ -103,6 +104,7 @@ impl ApiClient {
             client,
             base_url: account.base_url.trim_end_matches('/').to_string(),
             token: account.token.clone(),
+            user_id: account.user_id,
         })
     }
 
@@ -111,6 +113,10 @@ impl ApiClient {
         headers.insert(
             AUTHORIZATION,
             HeaderValue::from_str(&format!("Bearer {}", self.token)).unwrap(),
+        );
+        headers.insert(
+            HeaderName::from_static("new-api-user"),
+            HeaderValue::from(self.user_id),
         );
         headers
     }

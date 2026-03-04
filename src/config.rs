@@ -29,6 +29,7 @@ pub struct Account {
     pub base_url: String,
     #[serde(default)]
     pub token: String,
+    pub user_id: u32,
 }
 
 fn default_refresh_interval() -> u64 { 300 }
