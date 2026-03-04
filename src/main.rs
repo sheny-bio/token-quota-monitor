@@ -1,14 +1,94 @@
 mod api;
-mod cache;
-mod cli;
 mod config;
-mod display;
-mod error;
 
-use clap::Parser;
-use cli::{Cli, Commands};
+use clap::{Parser, Subcommand};
 use config::Config;
-use error::Result;
+use std::fmt;
+
+// ── Error ───────────────────────────────────────────────────────────────
+
+#[derive(Debug)]
+pub enum Error {
+    ConfigNotFound(String),
+    AccountNotFound(String),
+    Api(reqwest::Error),
+    ApiMessage(String),
+    Cache(String),
+    Io(std::io::Error),
+    Json(serde_json::Error),
+    Toml(toml::de::Error),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::ConfigNotFound(p) => write!(f, "Config not found: {p}"),
+            Error::AccountNotFound(n) => write!(f, "Account not found: {n}"),
+            Error::Api(e) => write!(f, "API error: {e}"),
+            Error::ApiMessage(m) => write!(f, "API error: {m}"),
+            Error::Cache(m) => write!(f, "Cache error: {m}"),
+            Error::Io(e) => write!(f, "IO error: {e}"),
+            Error::Json(e) => write!(f, "JSON error: {e}"),
+            Error::Toml(e) => write!(f, "TOML parse error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl From<reqwest::Error> for Error {
+    fn from(e: reqwest::Error) -> Self { Error::Api(e) }
+}
+impl From<std::io::Error> for Error {
+    fn from(e: std::io::Error) -> Self { Error::Io(e) }
+}
+impl From<serde_json::Error> for Error {
+    fn from(e: serde_json::Error) -> Self { Error::Json(e) }
+}
+impl From<toml::de::Error> for Error {
+    fn from(e: toml::de::Error) -> Self { Error::Toml(e) }
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+// ── CLI ─────────────────────────────────────────────────────────────────
+
+#[derive(Parser)]
+#[command(name = "tqm", version, about = "Token Quota Monitor for API proxy services")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Refresh cache in background (internal use)
+    #[command(hide = true)]
+    Refresh {
+        #[arg(short, long)]
+        account: String,
+    },
+}
+
+// ── Display ─────────────────────────────────────────────────────────────
+
+fn render_widget(account_name: &str, entry: &config::CacheEntry) -> String {
+    let sub = &entry.subscription;
+    let remain_usd = api::SubscriptionInfo::to_usd(sub.amount_remain);
+    let total_usd = api::SubscriptionInfo::to_usd(sub.amount_total);
+    let pct = sub.usage_percent();
+    let days = sub.remaining_days();
+
+    let filled = ((pct / 10.0).round() as usize).min(10);
+    let bar: String = "\u{2593}".repeat(filled) + &"\u{2591}".repeat(10 - filled);
+
+    format!(
+        "{} ${:.0}/${:.0} {} {:.0}% {:.0}d",
+        account_name, remain_usd, total_usd, bar, pct, days,
+    )
+}
+
+// ── Main ────────────────────────────────────────────────────────────────
 
 fn main() {
     let cli = Cli::parse();
@@ -33,18 +113,17 @@ fn run(cli: Cli) -> Result<()> {
     }
 }
 
-/// Default mode: output single-line widget text for ccstatusline
 fn cmd_widget() -> Result<()> {
     let config = Config::load()?;
     let account = config.resolve_account()?;
     let account_name = account.name.clone();
 
-    match cache::load(&config, &account_name) {
+    match config::load_cache(&config, &account_name) {
         Ok(entry) => {
             if !entry.is_valid() {
                 spawn_background_refresh(&account_name);
             }
-            println!("{}", display::render_widget(&account_name, &entry));
+            println!("{}", render_widget(&account_name, &entry));
         }
         Err(_) => {
             spawn_background_refresh(&account_name);
@@ -54,14 +133,13 @@ fn cmd_widget() -> Result<()> {
     Ok(())
 }
 
-/// Hidden: refresh cache for an account
 fn cmd_refresh(account_name: &str) -> Result<()> {
     let config = Config::load()?;
     let account = config.resolve_account()?;
     let client = api::ApiClient::new(account)?;
     let user_info = client.get_user_info()?;
     let subscription = client.get_subscription()?;
-    cache::save(&config, account_name, user_info, subscription)
+    config::save_cache(&config, account_name, user_info, subscription)
 }
 
 fn spawn_background_refresh(account_name: &str) {

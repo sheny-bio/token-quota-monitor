@@ -1,9 +1,0 @@
-[general]
-cache_ttl_seconds = 300
-cache_dir = "~/.cache/tqm"
-default_account = "78code"
-
-[[accounts]]
-name = "78code"
-base_url = "https://www.78code.cc"
-token = "your-access-token-here"

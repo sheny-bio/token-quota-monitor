@@ -1,5 +1,5 @@
 use crate::config::Account;
-use crate::error::{Error, Result};
+use crate::{Error, Result};
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::{Deserialize, Serialize};
