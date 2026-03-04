@@ -6,9 +6,7 @@ default_account = "78code"
 [[accounts]]
 name = "78code"
 base_url = "https://www.78code.cc"
-username = "shenny"
-session = ""        # Run `tqm login 78code` to fill this automatically
-user_id = 0         # Run `tqm login 78code` to fill this automatically
+token = "your-access-token-here"
 
 [routing]
 "www.78code.cc" = "78code"

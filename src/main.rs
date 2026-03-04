@@ -33,7 +33,6 @@ fn run(cli: Cli) -> Result<()> {
         Some(Commands::Stats { ref account, refresh, json, quiet }) => {
             cmd_stats(&cli, account.as_deref(), refresh, json, quiet)
         }
-        Some(Commands::Login { ref account_name }) => cmd_login(&cli, account_name),
         Some(Commands::Accounts) => cmd_accounts(&cli),
         Some(Commands::Cache { ref action }) => cmd_cache(&cli, action),
     }
@@ -74,14 +73,13 @@ fn cmd_stats(
     let config = Config::load(cli.config.as_ref())?;
     let account = config.resolve_account(account_name)?;
     let name = account.name.clone();
-    let username = account.username.clone();
 
     // Try cache first unless --refresh
     if !refresh {
         if let Ok(entry) = cache::load(&config, &name) {
             if entry.is_valid() {
                 if !quiet {
-                    output_stats(&name, &username, &entry, json);
+                    output_stats(&name, &entry, json);
                 }
                 return Ok(());
             }
@@ -98,57 +96,28 @@ fn cmd_stats(
 
     if !quiet {
         let entry = cache::load(&config, &name)?;
-        output_stats(&name, &username, &entry, json);
+        output_stats(&name, &entry, json);
     }
 
     Ok(())
 }
 
-fn output_stats(name: &str, username: &str, entry: &cache::CacheEntry, json: bool) {
+fn output_stats(name: &str, entry: &cache::CacheEntry, json: bool) {
     if json {
         println!("{}", display::render_json(name, entry));
     } else {
-        println!("{}", display::render_stats(name, username, entry));
+        println!("{}", display::render_stats(name, entry));
     }
-}
-
-/// `tqm login <account>`: interactive login
-fn cmd_login(cli: &Cli, account_name: &str) -> Result<()> {
-    let mut config = Config::load(cli.config.as_ref())?;
-
-    let account = config.find_account(account_name)
-        .ok_or_else(|| error::Error::AccountNotFound(account_name.to_string()))?;
-    let base_url = account.base_url.clone();
-    let username = account.username.clone();
-
-    // Get password from env or interactive input
-    let password = if let Ok(pw) = std::env::var("TQM_PASSWORD") {
-        pw
-    } else {
-        rpassword::prompt_password(format!("Password for {} @ {}: ", username, base_url))
-            .map_err(|e| error::Error::Io(e))?
-    };
-
-    let resp = api::ApiClient::login(&base_url, &username, &password)?;
-
-    // Update config
-    let account = config.find_account_mut(account_name)?;
-    account.session = resp.session;
-    account.user_id = resp.user_id;
-    config.save()?;
-
-    eprintln!("Logged in as {} (user_id: {})", username, resp.user_id);
-    Ok(())
 }
 
 /// `tqm accounts`: list configured accounts
 fn cmd_accounts(cli: &Cli) -> Result<()> {
     let config = Config::load(cli.config.as_ref())?;
     for account in &config.accounts {
-        let has_session = if account.session.is_empty() { "no session" } else { "has session" };
+        let token_status = if account.token.is_empty() { "no token" } else { "token set" };
         println!(
-            "  {} ({}) @ {} [{}]",
-            account.name, account.username, account.base_url, has_session,
+            "  {} @ {} [{}]",
+            account.name, account.base_url, token_status,
         );
     }
     println!("\nDefault: {}", config.general.default_account);

@@ -1,26 +1,15 @@
 use crate::config::Account;
 use crate::error::{Error, Result};
 use reqwest::blocking::Client;
-use reqwest::header::{HeaderMap, HeaderValue, COOKIE};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-
-#[derive(Debug)]
-pub struct LoginResponse {
-    pub session: String,
-    pub user_id: u32,
-}
 
 #[derive(Debug, Deserialize)]
 struct ApiResponse<T> {
     success: bool,
     message: Option<String>,
     data: Option<T>,
-}
-
-#[derive(Debug, Deserialize)]
-struct LoginData {
-    id: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -102,8 +91,7 @@ impl SubscriptionInfo {
 pub struct ApiClient {
     client: Client,
     base_url: String,
-    session: String,
-    user_id: u32,
+    token: String,
 }
 
 impl ApiClient {
@@ -114,72 +102,17 @@ impl ApiClient {
         Ok(Self {
             client,
             base_url: account.base_url.trim_end_matches('/').to_string(),
-            session: account.session.clone(),
-            user_id: account.user_id,
+            token: account.token.clone(),
         })
     }
 
     fn auth_headers(&self) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(
-            COOKIE,
-            HeaderValue::from_str(&format!("session={}", self.session)).unwrap(),
-        );
-        headers.insert(
-            "New-Api-User",
-            HeaderValue::from_str(&self.user_id.to_string()).unwrap(),
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {}", self.token)).unwrap(),
         );
         headers
-    }
-
-    pub fn login(base_url: &str, username: &str, password: &str) -> Result<LoginResponse> {
-        let base_url = base_url.trim_end_matches('/');
-        let client = Client::builder()
-            .timeout(Duration::from_secs(10))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()?;
-
-        let resp = client
-            .post(format!("{}/api/user/login", base_url))
-            .json(&serde_json::json!({
-                "username": username,
-                "password": password,
-            }))
-            .send()?;
-
-        // Extract session from Set-Cookie header
-        let session = resp
-            .headers()
-            .get_all("set-cookie")
-            .iter()
-            .find_map(|v| {
-                let s = v.to_str().ok()?;
-                if s.starts_with("session=") {
-                    Some(
-                        s.split(';')
-                            .next()?
-                            .strip_prefix("session=")?
-                            .to_string(),
-                    )
-                } else {
-                    None
-                }
-            })
-            .ok_or_else(|| Error::ApiMessage("No session cookie in response".to_string()))?;
-
-        let body: ApiResponse<LoginData> = resp.json()?;
-        if !body.success {
-            return Err(Error::ApiMessage(
-                body.message.unwrap_or_else(|| "Login failed".to_string()),
-            ));
-        }
-
-        let data = body.data.ok_or_else(|| Error::ApiMessage("No data in login response".to_string()))?;
-
-        Ok(LoginResponse {
-            session,
-            user_id: data.id,
-        })
     }
 
     pub fn get_user_info(&self) -> Result<UserInfo> {
@@ -192,9 +125,6 @@ impl ApiClient {
 
         if !resp.success {
             let msg = resp.message.unwrap_or_default();
-            if msg.contains("未登录") || msg.contains("session") {
-                return Err(Error::SessionExpired("".to_string()));
-            }
             return Err(Error::ApiMessage(msg));
         }
 
@@ -216,9 +146,6 @@ impl ApiClient {
 
         if !resp.success {
             let msg = resp.message.unwrap_or_default();
-            if msg.contains("未登录") || msg.contains("session") {
-                return Err(Error::SessionExpired("".to_string()));
-            }
             return Err(Error::ApiMessage(msg));
         }
 
@@ -229,7 +156,6 @@ impl ApiClient {
             .subscriptions
             .into_iter()
             .find(|s| s.subscription.status == "active")
-            .or_else(|| None)
             .ok_or_else(|| Error::ApiMessage("No active subscription found".to_string()))?;
 
         let s = sub.subscription;

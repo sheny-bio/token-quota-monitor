@@ -1,9 +1,9 @@
 use crate::error::{Error, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct Config {
     pub general: General,
     pub accounts: Vec<Account>,
@@ -14,7 +14,7 @@ pub struct Config {
     pub path: PathBuf,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct General {
     #[serde(default = "default_cache_ttl")]
     pub cache_ttl_seconds: u64,
@@ -23,15 +23,11 @@ pub struct General {
     pub default_account: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct Account {
     pub name: String,
     pub base_url: String,
-    pub username: String,
-    #[serde(default)]
-    pub session: String,
-    #[serde(default)]
-    pub user_id: u32,
+    pub token: String,
 }
 
 fn default_cache_ttl() -> u64 { 300 }
@@ -57,26 +53,6 @@ impl Config {
         Ok(config)
     }
 
-    pub fn save(&self) -> Result<()> {
-        let dir = self.path.parent().unwrap();
-        std::fs::create_dir_all(dir)?;
-
-        let content = toml::to_string_pretty(self)?;
-
-        // Atomic write: write to temp file then rename
-        let tmp_path = self.path.with_extension("tmp");
-        std::fs::write(&tmp_path, &content)?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600))?;
-        }
-
-        std::fs::rename(&tmp_path, &self.path)?;
-        Ok(())
-    }
-
     pub fn default_path() -> PathBuf {
         dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("~/.config"))
@@ -96,13 +72,6 @@ impl Config {
 
     pub fn find_account(&self, name: &str) -> Option<&Account> {
         self.accounts.iter().find(|a| a.name == name)
-    }
-
-    pub fn find_account_mut(&mut self, name: &str) -> Result<&mut Account> {
-        self.accounts
-            .iter_mut()
-            .find(|a| a.name == name)
-            .ok_or_else(|| Error::AccountNotFound(name.to_string()))
     }
 
     /// Resolve account based on: --account flag > ANTHROPIC_BASE_URL > default_account

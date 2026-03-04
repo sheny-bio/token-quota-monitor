@@ -32,11 +32,6 @@ pub enum Commands {
         #[arg(long)]
         quiet: bool,
     },
-    /// Login to an API proxy and store session
-    Login {
-        /// Account name as defined in config
-        account_name: String,
-    },
     /// List configured accounts
     Accounts,
     /// Cache management

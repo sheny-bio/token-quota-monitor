@@ -20,7 +20,7 @@ pub fn render_widget(account_name: &str, entry: &CacheEntry) -> String {
 }
 
 /// Detailed stats table for `tqm stats`
-pub fn render_stats(account_name: &str, username: &str, entry: &CacheEntry) -> String {
+pub fn render_stats(account_name: &str, entry: &CacheEntry) -> String {
     let sub = &entry.subscription;
     let user = &entry.user;
 
@@ -39,7 +39,7 @@ pub fn render_stats(account_name: &str, username: &str, entry: &CacheEntry) -> S
     let bar: String = "\u{2593}".repeat(filled) + &"\u{2591}".repeat(20 - filled);
 
     format!(
-        "Account:      {} ({})\n\
+        "Account:      {}\n\
          Plan:         plan_id={} [{}]\n\
          Subscription: ${:.2} / ${:.2} remaining ({:.2}% used)\n\
          Wallet:       ${:.2}\n\
@@ -47,7 +47,7 @@ pub fn render_stats(account_name: &str, username: &str, entry: &CacheEntry) -> S
          Next Reset:   {}\n\
          Requests:     {}\n\n\
          [{}] {:.2}%",
-        account_name, username,
+        account_name,
         sub.plan_id, sub.status,
         remain_usd, total_usd, pct,
         wallet_usd,
