@@ -5,6 +5,8 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, HeaderName};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+// ── 内部反序列化结构（直接对应 API JSON）────────────────────────────────────
+
 #[derive(Debug, Deserialize)]
 struct ApiResponse<T> {
     success: bool,
@@ -12,19 +14,33 @@ struct ApiResponse<T> {
     data: Option<T>,
 }
 
+/// GET /api/user/self 的 data 字段
 #[derive(Debug, Deserialize)]
 struct UserData {
+    pub id: u32,           // 用户数字 ID，例: 303
+    pub username: String,  // 登录用户名，例: "shenny"
+    pub display_name: String, // 展示名，例: "shenny"
+    pub email: String,     // 注册邮箱，例: "406205391@qq.com"（可为空）
+    pub group: String,     // 所属用户组，例: "new-cc"（影响可用模型）
+    pub role: i32,         // 角色级别：1=普通用户, 10=管理员, 100=超级管理员
+    pub status: i32,       // 账户状态：1=正常, 2=禁用
     #[serde(default)]
-    pub quota: i64,
+    pub quota: i64,        // 钱包余额（积分单位），例: 328926 ≈ $0.66
     #[serde(default)]
-    pub used_quota: i64,
+    pub used_quota: i64,   // 钱包累计消耗，例: 35638653 ≈ $71.28
     #[serde(default)]
-    pub request_count: u64,
+    pub request_count: u64, // 历史总请求次数，例: 841
 }
 
+/// GET /api/subscription/self 的 data 字段
 #[derive(Debug, Deserialize)]
 struct SubscriptionResponse {
+    /// 当前有效订阅列表（status=active）
     subscriptions: Vec<SubscriptionWrapper>,
+    /// 所有历史订阅（含已过期）
+    #[allow(dead_code)]
+    all_subscriptions: Vec<SubscriptionWrapper>,
+    /// 计费偏好，例: "subscription_first"（先扣订阅额度再扣钱包）
     #[serde(default)]
     #[allow(dead_code)]
     billing_preference: Option<String>,
@@ -37,44 +53,71 @@ struct SubscriptionWrapper {
 
 #[derive(Debug, Deserialize)]
 struct SubscriptionData {
-    id: u32,
-    plan_id: u32,
-    amount_total: i64,
-    amount_used: i64,
-    start_time: i64,
-    end_time: i64,
-    status: String,
+    id: u32,           // 订阅记录 ID，例: 22
+    user_id: u32,      // 归属用户 ID，例: 303
+    plan_id: u32,      // 套餐 ID，例: 2
+    amount_total: i64, // 订阅周期总额度（积分），例: 50000000 = $100
+    amount_used: i64,  // 已使用额度（积分），例: 8467579 ≈ $16.94
+    start_time: i64,   // 订阅开始时间（Unix 秒），例: 1772596242
+    end_time: i64,     // 订阅到期时间（Unix 秒），例: 1775274642
+    status: String,    // 订阅状态，例: "active" / "expired"
+    source: String,    // 来源，例: "order"（购买）
     #[serde(default)]
-    next_reset_time: i64,
+    last_reset_time: i64,  // 上次重置时间（Unix 秒），例: 1772596242
+    #[serde(default)]
+    next_reset_time: i64,  // 下次重置时间（Unix 秒），例: 1772985600
+    upgrade_group: String, // 订阅激活后升级到的用户组，例: "new-cc"
+    prev_user_group: String, // 订阅前的用户组，例: "default"
+    created_at: i64,   // 记录创建时间（Unix 秒），例: 1772596242
+    updated_at: i64,   // 记录最后更新时间（Unix 秒），例: 1772605136
 }
 
-// Public structs for cache storage
+// ── 公开结构（用于缓存持久化与展示）────────────────────────────────────────
+
+/// 用户基本信息，来自 /api/user/self
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UserInfo {
-    pub wallet_quota: i64,
-    pub used_quota: i64,
-    pub request_count: u64,
+    pub id: u32,             // 用户数字 ID，例: 303
+    pub username: String,    // 登录用户名，例: "shenny"
+    pub display_name: String, // 展示名，例: "shenny"
+    pub email: String,       // 注册邮箱，例: "406205391@qq.com"
+    pub group: String,       // 所属用户组，例: "new-cc"
+    pub role: i32,           // 角色级别：1=普通用户, 10=管理员, 100=超级管理员
+    pub status: i32,         // 账户状态：1=正常, 2=禁用
+    pub wallet_quota: i64,   // 钱包剩余积分，例: 328926 ≈ $0.66（对应 API 的 quota）
+    pub used_quota: i64,     // 钱包累计消耗积分，例: 35638653 ≈ $71.28
+    pub request_count: u64,  // 历史总请求次数，例: 841
 }
 
+/// 订阅信息，来自 /api/subscription/self（取 status=active 的第一条）
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SubscriptionInfo {
-    pub id: u32,
-    pub plan_id: u32,
-    pub status: String,
-    pub amount_total: i64,
-    pub amount_used: i64,
-    pub amount_remain: i64,
-    pub start_time: i64,
-    pub end_time: i64,
-    pub next_reset_time: i64,
+    pub id: u32,             // 订阅记录 ID，例: 22
+    pub user_id: u32,        // 归属用户 ID，例: 303
+    pub plan_id: u32,        // 套餐 ID，例: 2
+    pub status: String,      // 订阅状态，例: "active"
+    pub source: String,      // 来源，例: "order"
+    pub amount_total: i64,   // 周期总额度（积分），例: 50000000 = $100
+    pub amount_used: i64,    // 已使用额度（积分），例: 8467579 ≈ $16.94
+    pub amount_remain: i64,  // 剩余额度（积分，派生值），例: 41532421 ≈ $83.06
+    pub start_time: i64,     // 订阅开始时间（Unix 秒），例: 1772596242
+    pub end_time: i64,       // 订阅到期时间（Unix 秒），例: 1775274642
+    pub last_reset_time: i64,  // 上次额度重置时间（Unix 秒），例: 1772596242
+    pub next_reset_time: i64,  // 下次额度重置时间（Unix 秒），例: 1772985600
+    pub upgrade_group: String, // 订阅激活后的用户组，例: "new-cc"
+    pub prev_user_group: String, // 订阅前的用户组，例: "default"
+    pub created_at: i64,     // 记录创建时间（Unix 秒），例: 1772596242
+    pub updated_at: i64,     // 记录最后更新时间（Unix 秒），例: 1772605136
 }
 
 impl SubscriptionInfo {
+    /// 订阅额度使用百分比，amount_total=0 时返回 None
     pub fn usage_percent(&self) -> Option<f64> {
         if self.amount_total == 0 { return None; }
         Some((self.amount_used as f64 / self.amount_total as f64) * 100.0)
     }
 
+    /// 距订阅到期的剩余天数（已过期返回 0.0）
     pub fn remaining_days(&self) -> f64 {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -83,16 +126,19 @@ impl SubscriptionInfo {
         ((self.end_time - now) as f64 / 86400.0).max(0.0)
     }
 
+    /// 积分换算为美元：500_000 积分 = $1
     pub fn to_usd(quota: i64) -> f64 {
         quota as f64 / 500_000.0
     }
 }
 
+// ── HTTP 客户端 ──────────────────────────────────────────────────────────────
+
 pub struct ApiClient {
     client: Client,
-    base_url: String,
-    token: String,
-    user_id: u32,
+    base_url: String, // 例: "https://www.78code.cc"
+    token: String,    // Bearer token，来自 config
+    user_id: u32,     // New-Api-User header 所需的用户 ID，例: 303
 }
 
 impl ApiClient {
@@ -108,6 +154,9 @@ impl ApiClient {
         })
     }
 
+    /// New-API 要求同时提供两个认证 header：
+    ///   Authorization: Bearer <token>
+    ///   New-Api-User: <user_id>
     fn auth_headers(&self) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -121,6 +170,7 @@ impl ApiClient {
         headers
     }
 
+    /// 获取当前用户信息，对应 GET /api/user/self
     pub fn get_user_info(&self) -> Result<UserInfo> {
         let resp: ApiResponse<UserData> = self
             .client
@@ -136,12 +186,21 @@ impl ApiClient {
 
         let data = resp.data.ok_or_else(|| Error::ApiMessage("用户数据为空".into()))?;
         Ok(UserInfo {
+            id: data.id,
+            username: data.username,
+            display_name: data.display_name,
+            email: data.email,
+            group: data.group,
+            role: data.role,
+            status: data.status,
             wallet_quota: data.quota,
             used_quota: data.used_quota,
             request_count: data.request_count,
         })
     }
 
+    /// 获取当前用户的活跃订阅，对应 GET /api/subscription/self
+    /// 取 subscriptions 列表中第一条 status=active 的记录
     pub fn get_subscription(&self) -> Result<SubscriptionInfo> {
         let resp: ApiResponse<SubscriptionResponse> = self
             .client
@@ -157,7 +216,6 @@ impl ApiClient {
 
         let data = resp.data.ok_or_else(|| Error::ApiMessage("订阅数据为空".into()))?;
 
-        // Find the active subscription
         let sub = data
             .subscriptions
             .into_iter()
@@ -167,14 +225,21 @@ impl ApiClient {
         let s = sub.subscription;
         Ok(SubscriptionInfo {
             id: s.id,
+            user_id: s.user_id,
             plan_id: s.plan_id,
             status: s.status,
+            source: s.source,
             amount_total: s.amount_total,
             amount_used: s.amount_used,
             amount_remain: s.amount_total - s.amount_used,
             start_time: s.start_time,
             end_time: s.end_time,
+            last_reset_time: s.last_reset_time,
             next_reset_time: s.next_reset_time,
+            upgrade_group: s.upgrade_group,
+            prev_user_group: s.prev_user_group,
+            created_at: s.created_at,
+            updated_at: s.updated_at,
         })
     }
 }
