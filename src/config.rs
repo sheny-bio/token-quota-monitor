@@ -20,7 +20,6 @@ pub struct General {
     pub refresh_interval: u64,
     #[serde(default = "default_cache_dir")]
     pub cache_dir: String,
-    pub default_account: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -40,8 +39,9 @@ impl Config {
         let path = if let Ok(p) = std::env::var("TQM_CONFIG") {
             PathBuf::from(p)
         } else {
-            dirs::config_dir()
-                .unwrap_or_else(|| PathBuf::from("~/.config"))
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("~"))
+                .join(".config")
                 .join("tqm")
                 .join("config.toml")
         };
@@ -66,22 +66,18 @@ impl Config {
     }
 
     pub fn resolve_account(&self) -> Result<&Account> {
-        // 优先通过 ANTHROPIC_BASE_URL 环境变量 + url_mapping 匹配账户
-        if let Ok(env_url) = std::env::var("ANTHROPIC_BASE_URL") {
-            for (domain, account_name) in &self.url_mapping {
-                if env_url.contains(domain) {
-                    let account = self.find_account(account_name)?;
-                    return Self::validate_token(account);
-                }
-            }
-            // URL 设了但 mapping 匹配不上 → 不能静默 fallback
-            if !self.url_mapping.is_empty() {
-                return Err(Error::UrlMappingNotFound { url: env_url });
+        // 通过 ANTHROPIC_BASE_URL 环境变量 + url_mapping 匹配账户
+        let env_url = std::env::var("ANTHROPIC_BASE_URL")
+            .map_err(|_| Error::BaseUrlNotSet)?;
+
+        for (domain, account_name) in &self.url_mapping {
+            if env_url.contains(domain) {
+                let account = self.find_account(account_name)?;
+                return Self::validate_token(account);
             }
         }
-        // 没设 ANTHROPIC_BASE_URL 或 url_mapping 为空 → 用 default_account
-        let account = self.find_account(&self.general.default_account)?;
-        Self::validate_token(account)
+
+        Err(Error::UrlMappingNotFound { url: env_url })
     }
 
     fn validate_token(account: &Account) -> Result<&Account> {

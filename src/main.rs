@@ -12,6 +12,7 @@ pub enum Error {
     ConfigNotFound(String),
     AccountNotFound(String),
     UrlMappingNotFound { url: String },
+    BaseUrlNotSet,
     TokenMissing(String),
     NoActiveSubscription,
     Api(reqwest::Error),
@@ -30,6 +31,7 @@ impl fmt::Display for Error {
             Error::UrlMappingNotFound { url } => {
                 write!(f, "ANTHROPIC_BASE_URL={url} does not match any url_mapping entry")
             }
+            Error::BaseUrlNotSet => write!(f, "ANTHROPIC_BASE_URL is not set"),
             Error::TokenMissing(n) => write!(f, "Account '{n}' has no token configured"),
             Error::NoActiveSubscription => write!(f, "No active subscription found"),
             Error::Api(e) => write!(f, "API error: {e}"),
@@ -99,6 +101,7 @@ fn widget_error(e: &Error) -> String {
         Error::ConfigNotFound(_) => "tqm:无配置".into(),
         Error::AccountNotFound(n) => format!("tqm:{n}不存在"),
         Error::UrlMappingNotFound { .. } => "tqm:URL未映射".into(),
+        Error::BaseUrlNotSet => "tqm:未设URL".into(),
         Error::TokenMissing(n) => format!("tqm:{n}无token"),
         Error::NoActiveSubscription => "tqm:无订阅".into(),
         Error::Api(_) => "tqm:API错误".into(),
