@@ -145,8 +145,10 @@ fn cmd_widget() -> Result<()> {
         Ok(entry) => {
             if !entry.is_valid() {
                 spawn_background_refresh(&account_name);
+                println!("{} 加载中...", account_name);
+            } else {
+                println!("{}", render_widget(&account_name, &entry));
             }
-            println!("{}", render_widget(&account_name, &entry));
         }
         Err(_) => {
             spawn_background_refresh(&account_name);
