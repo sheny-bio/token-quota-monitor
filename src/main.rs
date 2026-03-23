@@ -217,11 +217,19 @@ fn cmd_widget() -> Result<()> {
 
     match config::load_cache(&account_name) {
         Ok(entry) => {
-            if !entry.is_valid() {
-                spawn_background_refresh(&account_name);
-                println!("{} 加载中...", account_name);
-            } else {
-                println!("{}", render_widget(&account_name, &entry));
+            use config::CacheFreshness::*;
+            match entry.freshness() {
+                Fresh => {
+                    println!("{}", render_widget(&account_name, &entry));
+                }
+                Stale => {
+                    println!("{}", render_widget(&account_name, &entry));
+                    spawn_background_refresh(&account_name);
+                }
+                Expired => {
+                    spawn_background_refresh(&account_name);
+                    println!("{} 加载中...", account_name);
+                }
             }
         }
         Err(_) => {

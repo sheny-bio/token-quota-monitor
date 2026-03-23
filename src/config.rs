@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const CACHE_TTL: u64 = 300;
+const CACHE_SOFT_TTL: u64 = 240;
+const CACHE_HARD_TTL: u64 = 600;
 
 fn cache_dir() -> PathBuf {
     dirs::home_dir()
@@ -117,6 +118,13 @@ impl Config {
 
 // ── Cache ───────────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheFreshness {
+    Fresh,
+    Stale,
+    Expired,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CacheEntry {
     pub fetched_at: i64,
@@ -126,12 +134,23 @@ pub struct CacheEntry {
 }
 
 impl CacheEntry {
-    pub fn is_valid(&self) -> bool {
+    fn age(&self) -> u64 {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-        (now - self.fetched_at) < CACHE_TTL as i64
+        (now - self.fetched_at).max(0) as u64
+    }
+
+    pub fn freshness(&self) -> CacheFreshness {
+        let age = self.age();
+        if age < CACHE_SOFT_TTL {
+            CacheFreshness::Fresh
+        } else if age < CACHE_HARD_TTL {
+            CacheFreshness::Stale
+        } else {
+            CacheFreshness::Expired
+        }
     }
 }
 
