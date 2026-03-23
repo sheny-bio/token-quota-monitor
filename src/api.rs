@@ -118,6 +118,7 @@ impl SubscriptionInfo {
     }
 
     /// 距订阅到期的剩余天数（已过期返回 0.0）
+    #[allow(dead_code)]
     pub fn remaining_days(&self) -> f64 {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -228,16 +229,21 @@ pub struct ApiClient {
     user_id: u32,     // New-Api-User header 所需的用户 ID，例: 303
 }
 
+
 impl ApiClient {
     pub fn new(account: &Account) -> Result<Self> {
+        Self::with_credentials(&account.base_url, &account.token, account.user_id)
+    }
+
+    pub fn with_credentials(base_url: &str, token: &str, user_id: u32) -> Result<Self> {
         let client = Client::builder()
             .timeout(Duration::from_secs(10))
             .build()?;
         Ok(Self {
             client,
-            base_url: account.base_url.trim_end_matches('/').to_string(),
-            token: account.token.clone(),
-            user_id: account.user_id,
+            base_url: base_url.trim_end_matches('/').to_string(),
+            token: token.to_string(),
+            user_id,
         })
     }
 

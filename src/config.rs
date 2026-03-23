@@ -4,25 +4,23 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const CACHE_TTL: u64 = 300;
+
+fn cache_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("~"))
+        .join(".cache")
+        .join("tqm")
+}
+
 // ── Config ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
-    pub general: General,
     pub accounts: Vec<Account>,
-    #[serde(default)]
-    pub url_mapping: std::collections::HashMap<String, String>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct General {
-    #[serde(default = "default_refresh_interval")]
-    pub refresh_interval: u64,
-    #[serde(default = "default_cache_dir")]
-    pub cache_dir: String,
-}
-
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Account {
     pub name: String,
     pub base_url: String,
@@ -31,12 +29,9 @@ pub struct Account {
     pub user_id: u32,
 }
 
-fn default_refresh_interval() -> u64 { 300 }
-fn default_cache_dir() -> String { "~/.cache/tqm".to_string() }
-
 impl Config {
-    pub fn load() -> Result<Self> {
-        let path = if let Ok(p) = std::env::var("TQM_CONFIG") {
+    pub fn config_path() -> PathBuf {
+        if let Ok(p) = std::env::var("TQM_CONFIG") {
             PathBuf::from(p)
         } else {
             dirs::home_dir()
@@ -44,40 +39,67 @@ impl Config {
                 .join(".config")
                 .join("tqm")
                 .join("config.toml")
-        };
+        }
+    }
 
+    pub fn load() -> Result<Self> {
+        let path = Self::config_path();
         if !path.exists() {
             return Err(Error::ConfigNotFound(path.display().to_string()));
         }
-
         let content = std::fs::read_to_string(&path)?;
-        let config: Config = toml::from_str(&content)?;
-        Ok(config)
+        toml::from_str(&content).map_err(Into::into)
     }
 
-    pub fn cache_dir(&self) -> PathBuf {
-        let dir = &self.general.cache_dir;
-        if dir.starts_with("~/") {
-            if let Some(home) = dirs::home_dir() {
-                return home.join(&dir[2..]);
-            }
+    /// 原子写回配置文件（tmp + rename）
+    fn save(&self) -> Result<()> {
+        let path = Self::config_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
         }
-        PathBuf::from(dir)
+        let content = toml::to_string_pretty(self)
+            .map_err(|e| Error::ApiMessage(format!("TOML 序列化失败: {e}")))?;
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, &content)?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(())
+    }
+
+    pub fn add_account(name: &str, base_url: String, token: String, user_id: u32) -> Result<()> {
+        let mut config = match Self::load() {
+            Ok(c) => c,
+            Err(Error::ConfigNotFound(_)) => Config { accounts: vec![] },
+            Err(e) => return Err(e),
+        };
+
+        if config.accounts.iter().any(|a| a.name == name) {
+            return Err(Error::ApiMessage(format!("账户 '{name}' 已存在")));
+        }
+
+        config.accounts.push(Account { name: name.to_string(), base_url, token, user_id });
+        config.save()
+    }
+
+    pub fn delete_account(name: &str) -> Result<()> {
+        let mut config = Self::load()?;
+        let before = config.accounts.len();
+        config.accounts.retain(|a| a.name != name);
+        if config.accounts.len() == before {
+            return Err(Error::AccountNotFound(name.to_string()));
+        }
+        config.save()
     }
 
     pub fn resolve_account(&self) -> Result<&Account> {
-        // 通过 ANTHROPIC_BASE_URL 环境变量 + url_mapping 匹配账户
         let env_url = std::env::var("ANTHROPIC_BASE_URL")
             .map_err(|_| Error::BaseUrlNotSet)?;
+        let env_url = env_url.trim_end_matches('/');
 
-        for (domain, account_name) in &self.url_mapping {
-            if env_url.contains(domain) {
-                let account = self.find_account(account_name)?;
-                return Self::validate_token(account);
-            }
-        }
+        let account = self.accounts.iter()
+            .find(|a| env_url == a.base_url.trim_end_matches('/'))
+            .ok_or_else(|| Error::UrlMappingNotFound { url: env_url.to_string() })?;
 
-        Err(Error::UrlMappingNotFound { url: env_url })
+        Self::validate_token(account)
     }
 
     fn validate_token(account: &Account) -> Result<&Account> {
@@ -98,7 +120,6 @@ impl Config {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CacheEntry {
     pub fetched_at: i64,
-    pub ttl_seconds: u64,
     pub account_name: String,
     pub user: UserInfo,
     pub subscription: SubscriptionInfo,
@@ -110,16 +131,16 @@ impl CacheEntry {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64;
-        (now - self.fetched_at) < self.ttl_seconds as i64
+        (now - self.fetched_at) < CACHE_TTL as i64
     }
 }
 
-fn cache_path(config: &Config, account_name: &str) -> PathBuf {
-    config.cache_dir().join(format!("{}.json", account_name))
+fn cache_path(account_name: &str) -> PathBuf {
+    cache_dir().join(format!("{}.json", account_name))
 }
 
-pub fn load_cache(config: &Config, account_name: &str) -> Result<CacheEntry> {
-    let path = cache_path(config, account_name);
+pub fn load_cache(account_name: &str) -> Result<CacheEntry> {
+    let path = cache_path(account_name);
     let content = std::fs::read_to_string(&path)
         .map_err(|e| Error::Cache(format!("Read {}: {}", path.display(), e)))?;
     serde_json::from_str(&content)
@@ -127,12 +148,11 @@ pub fn load_cache(config: &Config, account_name: &str) -> Result<CacheEntry> {
 }
 
 pub fn save_cache(
-    config: &Config,
     account_name: &str,
     user: UserInfo,
     subscription: SubscriptionInfo,
 ) -> Result<()> {
-    let dir = config.cache_dir();
+    let dir = cache_dir();
     std::fs::create_dir_all(&dir)?;
 
     let entry = CacheEntry {
@@ -140,16 +160,14 @@ pub fn save_cache(
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64,
-        ttl_seconds: config.general.refresh_interval,
         account_name: account_name.to_string(),
         user,
         subscription,
     };
 
     let content = serde_json::to_string_pretty(&entry)?;
-    let path = cache_path(config, account_name);
+    let path = cache_path(account_name);
 
-    // Atomic write
     let tmp_path = path.with_extension("tmp");
     std::fs::write(&tmp_path, &content)?;
     std::fs::rename(&tmp_path, &path)?;

@@ -78,6 +78,24 @@ enum Commands {
         #[arg(short, long)]
         account: String,
     },
+    /// Show configured accounts
+    Show,
+    /// Manage configuration
+    Config {
+        #[command(subcommand)]
+        action: ConfigCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConfigCommands {
+    /// Add an account interactively (auto-detects user via API)
+    Add,
+    /// Delete an account by name
+    Delete {
+        #[arg(short, long)]
+        name: String,
+    },
 }
 
 // ── Display ─────────────────────────────────────────────────────────────
@@ -100,7 +118,7 @@ fn widget_error(e: &Error) -> String {
     match e {
         Error::ConfigNotFound(_) => "tqm:无配置".into(),
         Error::AccountNotFound(n) => format!("tqm:{n}不存在"),
-        Error::UrlMappingNotFound { .. } => "tqm:URL未映射".into(),
+        Error::UrlMappingNotFound { .. } => "tqm:URL未匹配".into(),
         Error::BaseUrlNotSet => "tqm:未设URL".into(),
         Error::TokenMissing(n) => format!("tqm:{n}无token"),
         Error::NoActiveSubscription => "tqm:无订阅".into(),
@@ -133,7 +151,63 @@ fn run(cli: Cli) -> Result<()> {
     match cli.command {
         None => cmd_widget(),
         Some(Commands::Refresh { ref account }) => cmd_refresh(account),
+        Some(Commands::Show) => cmd_show(),
+        Some(Commands::Config { action }) => cmd_config(action),
     }
+}
+
+fn cmd_show() -> Result<()> {
+    let config = Config::load()?;
+    for a in &config.accounts {
+        println!("{}\t{}", a.name, a.base_url);
+    }
+    Ok(())
+}
+
+fn cmd_config(action: ConfigCommands) -> Result<()> {
+    match action {
+        ConfigCommands::Add => cmd_config_add(),
+        ConfigCommands::Delete { name } => {
+            Config::delete_account(&name)?;
+            eprintln!("已删除账户: {name}");
+            Ok(())
+        }
+    }
+}
+
+fn cmd_config_add() -> Result<()> {
+    use dialoguer::{Input, Password, Confirm};
+
+    macro_rules! dlg {
+        ($e:expr) => {
+            $e.map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?
+        };
+    }
+
+    let base_url: String = dlg!(Input::new().with_prompt("Base URL").interact_text());
+    let token: String   = dlg!(Password::new().with_prompt("Token").interact());
+    let user_id: u32    = dlg!(Input::new().with_prompt("User ID").interact_text());
+
+    eprintln!("正在验证...");
+    let client = api::ApiClient::with_credentials(&base_url, &token, user_id)?;
+    let user_info = client.get_user_info()?;
+    eprintln!("验证成功: {} ({})", user_info.username, user_info.email);
+
+    let name: String = dlg!(Input::new().with_prompt("账户名称").interact_text());
+
+    let confirm = dlg!(Confirm::new()
+        .with_prompt(format!("确认添加 {name} (user_id={user_id}, base_url={base_url})?"))
+        .default(true)
+        .interact());
+
+    if !confirm {
+        eprintln!("已取消");
+        return Ok(());
+    }
+
+    Config::add_account(&name, base_url, token, user_id)?;
+    eprintln!("已添加账户: {name}");
+    Ok(())
 }
 
 fn cmd_widget() -> Result<()> {
@@ -141,7 +215,7 @@ fn cmd_widget() -> Result<()> {
     let account = config.resolve_account()?;
     let account_name = account.name.clone();
 
-    match config::load_cache(&config, &account_name) {
+    match config::load_cache(&account_name) {
         Ok(entry) => {
             if !entry.is_valid() {
                 spawn_background_refresh(&account_name);
@@ -164,7 +238,7 @@ fn cmd_refresh(account_name: &str) -> Result<()> {
     let client = api::ApiClient::new(account)?;
     let user_info = client.get_user_info()?;
     let subscription = client.get_subscription()?;
-    config::save_cache(&config, account_name, user_info, subscription)
+    config::save_cache(account_name, user_info, subscription)
 }
 
 fn spawn_background_refresh(account_name: &str) {

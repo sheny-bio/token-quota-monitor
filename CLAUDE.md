@@ -1,0 +1,53 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+Token Quota Monitor (tqm) — Rust CLI 工具，监控 API proxy 服务的 token quota 使用情况。设计为嵌入 panel/widget 使用，支持后台缓存刷新。
+
+## Build & Test
+
+```bash
+cargo build --release    # 编译（release profile: opt-level="z", lto, strip）
+cargo test               # 运行所有测试
+cargo run                # widget 模式（需要 ANTHROPIC_BASE_URL 环境变量）
+cargo run -- refresh --account <name>  # 手动刷新指定账户缓存
+```
+
+## Architecture
+
+三个模块，职责清晰：
+
+- **main.rs** — CLI 入口（clap derive），两个命令路径：
+  - 无参数 widget 模式：配置 → URL mapping 解析 account → 读缓存 → 渲染或触发后台刷新
+  - `refresh --account` 子命令：API 请求 → 写缓存
+  - 统一 Error 枚举，widget 模式输出中文错误提示
+
+- **api.rs** — HTTP 客户端 + 数据结构：
+  - 内部反序列化结构（`ApiResponse<T>`, `UserData`, `SubscriptionResponse`）直接对应 API JSON
+  - 公开结构（`UserInfo`, `SubscriptionInfo`）用于缓存和展示
+  - `ApiClient` 使用双认证 headers：`Authorization: Bearer <token>` + `New-Api-User: <user_id>`
+  - 积分转美元：500,000 积分 = $1
+
+- **config.rs** — 配置加载 + 缓存管理：
+  - 配置文件：`$TQM_CONFIG` 或 `~/.config/tqm/config.toml`（TOML 格式）
+  - 缓存目录：`~/.cache/tqm/{account_name}.json`，TTL 默认 300s
+  - 账户解析：ANTHROPIC_BASE_URL → url_mapping → account name → token 验证
+  - 原子写缓存（tmp + rename）
+
+## Data Flow
+
+```
+widget（无参数）:
+  加载配置 → ANTHROPIC_BASE_URL 查 url_mapping → 读缓存
+  ├─ 缓存有效 → 渲染（账户名 + USD余额 + 剩余百分比）
+  └─ 缓存过期 → 显示"加载中" + spawn 后台子进程执行 refresh
+
+refresh --account:
+  加载配置 → 找 account → ApiClient 调 get_user_info + get_subscription → 写缓存
+```
+
+## Key Dependencies
+
+- `clap` v4 (derive API), `reqwest` v0.12 (blocking + rustls-tls), `serde`/`serde_json`, `toml` v0.8, `dirs` v6
