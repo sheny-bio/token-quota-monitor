@@ -72,6 +72,33 @@ struct SubscriptionData {
     updated_at: i64,   // 记录最后更新时间（Unix 秒），例: 1772605136
 }
 
+// ── sub2api 内部反序列化结构（GET /v1/usage，裸 JSON，无 success 包装）──────
+
+/// GET /v1/usage 的完整响应（只声明用得到的字段，其余 serde 自动忽略）
+#[derive(Debug, Deserialize)]
+struct UsageResponse {
+    /// 逐日用量，完整历史（实测求和等于 usage.total）
+    daily_usage: Vec<DailyUsage>,
+    usage: UsageTotals,
+}
+
+#[derive(Debug, Deserialize)]
+struct DailyUsage {
+    date: String,      // 形如 "2026-08-27"
+    actual_cost: f64,  // 当日实际计费，例: 97.2134154
+}
+
+#[derive(Debug, Deserialize)]
+struct UsageTotals {
+    today: UsageBucket,
+    total: UsageBucket,
+}
+
+#[derive(Debug, Deserialize)]
+struct UsageBucket {
+    actual_cost: f64,
+}
+
 // ── 公开结构（用于缓存持久化与展示）────────────────────────────────────────
 
 /// 用户基本信息，来自 /api/user/self
@@ -180,9 +207,161 @@ fn subscription_from_response(data: SubscriptionResponse, user_id: u32) -> Subsc
     }
 }
 
+/// 花费信息，来自 /v1/usage。sub2api 是后付费（mode="unrestricted"），没有余额概念，
+/// 所以这里记的是花了多少，而不是还剩多少。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CostInfo {
+    pub month: String,     // 统计月份，例: "2026-08"
+    pub today_cost: f64,   // 今日花费（USD），例: 97.2134154
+    pub month_cost: f64,   // 当月花费（USD），例: 561.7421451
+    pub total_cost: f64,   // 历史总花费（USD），例: 561.7421451
+}
+
+/// Unix 秒 → "YYYY-MM"（UTC）。civil_from_days 算法，不为一个月份引日期库。
+fn utc_month(secs: i64) -> String {
+    let days = secs.div_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
+    format!("{:04}-{:02}", y, m)
+}
+
+fn cost_from_usage(resp: UsageResponse, now_secs: i64) -> CostInfo {
+    // 取「本地 UTC 月份」与「服务端最大日期的月份」中较大的那个。
+    // "YYYY-MM" 字符串的字典序即时间序，所以 max 就是取较晚的月份。
+    //   - 只看服务端最大日期：月初闲置几天就会把上月总额当本月显示（本次要修的 bug）
+    //   - 只看 UTC：服务端时区领先 UTC 时，跨月头几小时会把新月份的记录过滤掉
+    // 取 max 时两种情形都能兜住。
+    // ponytail: 残留失效窗口 = 服务端已跨月但 UTC 未跨月、且该窗口内有用量（UTC+8 下约 8 小时）。
+    // 要彻底消除得知道服务端时区，这个 API 不提供。
+    let latest = resp
+        .daily_usage
+        .iter()
+        .map(|d| d.date.as_str())
+        .max()
+        .and_then(|d| d.get(..7))
+        .unwrap_or("");
+
+    let month = std::cmp::max(utc_month(now_secs), latest.to_string());
+
+    let month_cost = resp
+        .daily_usage
+        .iter()
+        .filter(|d| d.date.starts_with(&month))
+        .map(|d| d.actual_cost)
+        .sum();
+
+    CostInfo {
+        month,
+        today_cost: resp.usage.today.actual_cost,
+        month_cost,
+        total_cost: resp.usage.total.actual_cost,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn usage_fixture() -> UsageResponse {
+        // 实测数据（8 月合计 561.7421451），额外补一条 7 月记录，
+        // 确保月份过滤真的过滤掉了东西，而不是恰好等于 total。
+        let daily = [
+            ("2026-07-31", 42.5),
+            ("2026-08-21", 13.27866555),
+            ("2026-08-24", 110.351066),
+            ("2026-08-25", 145.64933515),
+            ("2026-08-26", 195.249663),
+            ("2026-08-27", 97.2134154),
+        ];
+        UsageResponse {
+            daily_usage: daily
+                .iter()
+                .map(|(d, c)| DailyUsage { date: d.to_string(), actual_cost: *c })
+                .collect(),
+            usage: UsageTotals {
+                today: UsageBucket { actual_cost: 97.2134154 },
+                total: UsageBucket { actual_cost: 604.2421451 },
+            },
+        }
+    }
+
+    fn close(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-6
+    }
+
+    /// 2026-08-27T00:00:00Z
+    const AUG_27: i64 = 1_787_788_800;
+    /// 2026-09-04T00:00:00Z —— 跨月后闲置了几天，一条新记录都没有
+    const SEP_04: i64 = 1_788_480_000;
+
+    #[test]
+    fn should_convert_unix_seconds_to_utc_month() {
+        assert_eq!(utc_month(0), "1970-01");
+        assert_eq!(utc_month(AUG_27), "2026-08");
+        assert_eq!(utc_month(SEP_04), "2026-09");
+        // 闰年 2 月末与月初边界
+        assert_eq!(utc_month(1_709_164_800), "2024-02"); // 2024-02-29T00:00:00Z
+        assert_eq!(utc_month(1_709_251_200), "2024-03"); // 2024-03-01T00:00:00Z
+    }
+
+    #[test]
+    fn should_aggregate_cost_for_current_month_only() {
+        let cost = cost_from_usage(usage_fixture(), AUG_27);
+
+        assert_eq!(cost.month, "2026-08");
+        assert!(close(cost.today_cost, 97.2134154), "today = {}", cost.today_cost);
+        assert!(close(cost.month_cost, 561.7421451), "month = {}", cost.month_cost);
+        assert!(close(cost.total_cost, 604.2421451), "total = {}", cost.total_cost);
+        // 7 月那条必须被排除掉
+        assert!(cost.month_cost < cost.total_cost);
+    }
+
+    /// 回归：跨月后闲置几天，最大日期仍停在上月。此时必须显示新月份的 0，
+    /// 而不是把上月总额当本月花费。
+    #[test]
+    fn should_report_zero_after_month_rollover_with_no_usage() {
+        let cost = cost_from_usage(usage_fixture(), SEP_04);
+
+        assert_eq!(cost.month, "2026-09");
+        assert!(close(cost.month_cost, 0.0), "month = {}", cost.month_cost);
+    }
+
+    /// 服务端时区领先 UTC：UTC 还在 8 月，但服务端已记了 9 月的用量，应认 9 月。
+    #[test]
+    fn should_prefer_server_month_when_it_is_ahead_of_utc() {
+        let mut resp = usage_fixture();
+        resp.daily_usage.push(DailyUsage {
+            date: "2026-09-01".to_string(),
+            actual_cost: 7.5,
+        });
+
+        let cost = cost_from_usage(resp, AUG_27);
+
+        assert_eq!(cost.month, "2026-09");
+        assert!(close(cost.month_cost, 7.5), "month = {}", cost.month_cost);
+    }
+
+    #[test]
+    fn should_not_panic_on_empty_daily_usage() {
+        let resp = UsageResponse {
+            daily_usage: vec![],
+            usage: UsageTotals {
+                today: UsageBucket { actual_cost: 0.0 },
+                total: UsageBucket { actual_cost: 0.0 },
+            },
+        };
+
+        let cost = cost_from_usage(resp, AUG_27);
+
+        assert_eq!(cost.month, "2026-08");
+        assert!(close(cost.month_cost, 0.0));
+    }
 
     #[test]
     fn should_build_empty_subscription_when_no_active() {
@@ -224,9 +403,9 @@ mod tests {
 
 pub struct ApiClient {
     client: Client,
-    base_url: String, // 例: "https://www.78code.cc"
-    token: String,    // Bearer token，来自 config
-    user_id: u32,     // New-Api-User header 所需的用户 ID，例: 303
+    base_url: String,      // 例: "https://www.78code.cc"
+    token: String,         // Bearer token，来自 config
+    user_id: Option<u32>,  // New-Api-User header 所需的用户 ID（sub2api 不需要，为 None）
 }
 
 
@@ -235,7 +414,7 @@ impl ApiClient {
         Self::with_credentials(&account.base_url, &account.token, account.user_id)
     }
 
-    pub fn with_credentials(base_url: &str, token: &str, user_id: u32) -> Result<Self> {
+    pub fn with_credentials(base_url: &str, token: &str, user_id: Option<u32>) -> Result<Self> {
         let client = Client::builder()
             .timeout(Duration::from_secs(10))
             .build()?;
@@ -250,16 +429,19 @@ impl ApiClient {
     /// New-API 要求同时提供两个认证 header：
     ///   Authorization: Bearer <token>
     ///   New-Api-User: <user_id>
+    /// sub2api 只认第一个，此时 user_id 为 None，不带第二个 header。
     fn auth_headers(&self) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(
             AUTHORIZATION,
             HeaderValue::from_str(&format!("Bearer {}", self.token)).unwrap(),
         );
-        headers.insert(
-            HeaderName::from_static("new-api-user"),
-            HeaderValue::from(self.user_id),
-        );
+        if let Some(id) = self.user_id {
+            headers.insert(
+                HeaderName::from_static("new-api-user"),
+                HeaderValue::from(id),
+            );
+        }
         headers
     }
 
@@ -307,6 +489,23 @@ impl ApiClient {
         }
 
         let data = resp.data.ok_or_else(|| Error::ApiMessage("订阅数据为空".into()))?;
-        Ok(subscription_from_response(data, self.user_id))
+        Ok(subscription_from_response(data, self.user_id.unwrap_or(0)))
+    }
+
+    /// 获取花费统计，对应 GET /v1/usage（sub2api）
+    pub fn get_usage(&self) -> Result<CostInfo> {
+        let resp: UsageResponse = self
+            .client
+            .get(format!("{}/v1/usage", self.base_url))
+            .headers(self.auth_headers())
+            .send()?
+            .error_for_status()?
+            .json()?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        Ok(cost_from_usage(resp, now))
     }
 }

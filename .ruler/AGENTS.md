@@ -1,17 +1,27 @@
-# CLAUDE.md
+# token-quota-monitor
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+本文件是 AI agent 的项目指令源。**由 ruler 从 `.ruler/AGENTS.md` 生成 `CLAUDE.md` 与 `AGENTS.md`，
+不要直接改产物**——改这里，然后 `ruler apply`。
 
 ## Project Overview
 
-Token Quota Monitor (tqm) — Rust CLI 工具，监控 API proxy 服务的 token quota 使用情况。设计为嵌入 panel/widget 使用，支持后台缓存刷新。
+Token Quota Monitor (tqm) — Rust CLI 工具，监控 API proxy 服务的用量。设计为嵌入 panel/widget 使用，支持后台缓存刷新。
+
+支持两种后端形态，由 `TQM_PROVIDER` 环境变量显式声明，**不设即 `newapi`**：
+
+| provider | 接口 | 认证 | widget 展示 |
+|---|---|---|---|
+| `newapi`（默认） | `/api/user/self` + `/api/subscription/self` | `Bearer` + `New-Api-User` 双 header | 钱包余额 + 订阅剩余百分比 |
+| `sub2api` | `/v1/usage` | 仅 `Bearer` | 今日 cost + 当月 cost |
+
+sub2api 是后付费（`mode: "unrestricted"`，`balance` 恒为 0），没有余额概念，所以展示花了多少而非还剩多少。
 
 ## Build & Test
 
 ```bash
 cargo build --release    # 编译（release profile: opt-level="z", lto, strip）
 cargo test               # 运行所有测试
-cargo run                # widget 模式（需要 ANTHROPIC_BASE_URL 环境变量）
+cargo run                # widget 模式（需要 ANTHROPIC_BASE_URL 等环境变量）
 cargo run -- refresh --account <name>  # 手动刷新指定账户缓存
 ```
 
@@ -24,30 +34,46 @@ cargo run -- refresh --account <name>  # 手动刷新指定账户缓存
   - `refresh --account` 子命令：API 请求 → 写缓存
   - 统一 Error 枚举，widget 模式输出中文错误提示
 
-- **api.rs** — HTTP 客户端 + 数据结构：
-  - 内部反序列化结构（`ApiResponse<T>`, `UserData`, `SubscriptionResponse`）直接对应 API JSON
-  - 公开结构（`UserInfo`, `SubscriptionInfo`）用于缓存和展示
-  - `ApiClient` 使用双认证 headers：`Authorization: Bearer <token>` + `New-Api-User: <user_id>`
-  - 积分转美元：500,000 积分 = $1
+- **api.rs** — HTTP 客户端 + 数据结构，两套 provider 各一组：
+  - new-api：`ApiResponse<T>` / `UserData` / `SubscriptionResponse` → 公开 `UserInfo` / `SubscriptionInfo`；
+    积分转美元 500,000 积分 = $1
+  - sub2api：`UsageResponse` / `DailyUsage` → 公开 `CostInfo`；响应是**裸 JSON，无 `success` 包装**
+  - `ApiClient.user_id: Option<u32>`，为 `Some` 时才带 `New-Api-User` header
+  - `cost_from_usage` 是纯函数，月份取「UTC 当前月」与「`daily_usage` 最大日期的前 7 字符」
+    中较晚的一个（`utc_month` 用 civil_from_days 算，不引日期库），当月 cost 按该前缀过滤求和。
+    取 max 是为了兼顾：跨月闲置几天时不把上月总额当本月，服务端时区领先 UTC 时也不漏掉新月份
 
-- **config.rs** — 配置加载 + 缓存管理：
-  - 配置文件：`$TQM_CONFIG` 或 `~/.config/tqm/config.toml`（TOML 格式）
-  - 缓存目录：`~/.cache/tqm/{account_name}.json`，TTL 默认 300s
-  - 账户解析：ANTHROPIC_BASE_URL → url_mapping → account name → token 验证
+- **config.rs** — 环境变量配置 + 缓存管理：
+  - 纯环境变量，无配置文件：`ANTHROPIC_BASE_URL` / `TQM_PROVIDER` / `TQM_TOKEN`（newapi）或 `ANTHROPIC_API_KEY`（sub2api），按 provider 严格选取、不回退
+    / `TQM_USER_ID`（仅 newapi 必需）/ `TQM_ACCOUNT_NAME`（缺省从 URL 推导）
+  - `TQM_PROVIDER` 只接受 `newapi` / `sub2api`，大小写不敏感，其余值直接报错而非静默回退
+  - 缓存目录：`~/.cache/tqm/{account_name}.json`，soft TTL 240s / hard TTL 600s
+  - `Snapshot` 是 `#[serde(tag = "kind")]` 的枚举，两种 provider 各一个变体
   - 原子写缓存（tmp + rename）
 
 ## Data Flow
 
 ```
 widget（无参数）:
-  加载配置 → ANTHROPIC_BASE_URL 查 url_mapping → 读缓存
-  ├─ 缓存有效 → 渲染（账户名 + USD余额 + 剩余百分比）
-  └─ 缓存过期 → 显示"加载中" + spawn 后台子进程执行 refresh
+  Account::from_env() → 读缓存 ~/.cache/tqm/{name}.json
+  ├─ Fresh   (<240s) → 按 snapshot.kind 渲染
+  ├─ Stale   (<600s) → 先渲染旧值，再 spawn 后台 refresh
+  └─ Expired / 读不到 → 显示"加载中..." + spawn 后台 refresh
 
 refresh --account:
-  加载配置 → 找 account → ApiClient 调 get_user_info + get_subscription → 写缓存
+  Account::from_env() → 按 provider 分支
+  ├─ NewApi  → get_user_info + get_subscription → Snapshot::NewApi
+  └─ Sub2Api → get_usage                        → Snapshot::Sub2Api
+  → 原子写缓存
+
+渲染:
+  Snapshot::NewApi  → "{name} ${wallet} {剩余}%"
+  Snapshot::Sub2Api → "{name} 今${today} 月${month}"
 ```
+
+> 缓存结构变更后，旧的 `~/.cache/tqm/*.json` 会解析失败。这是无害的：
+> widget 的 `Err(_)` 分支会显示"加载中..."并触发刷新，下一次渲染即恢复，无需手工清缓存。
 
 ## Key Dependencies
 
-- `clap` v4 (derive API), `reqwest` v0.12 (blocking + rustls-tls), `serde`/`serde_json`, `toml` v0.8, `dirs` v6
+- `clap` v4 (derive API), `reqwest` v0.12 (blocking + rustls-tls), `serde`/`serde_json`, `dirs` v6

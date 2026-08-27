@@ -70,10 +70,19 @@ enum Commands {
 // ── Display ──────────────────────────────────────────────────────────────
 
 fn render_widget(account_name: &str, entry: &config::CacheEntry) -> String {
-    let wallet_usd = api::SubscriptionInfo::to_usd(entry.user.wallet_quota);
-    match entry.subscription.usage_percent() {
-        Some(pct) => format!("{} ${:.2} {:.0}%", account_name, wallet_usd, 100.0 - pct),
-        None => format!("{} ${:.2}", account_name, wallet_usd),
+    match &entry.snapshot {
+        config::Snapshot::NewApi { user, subscription } => {
+            let wallet_usd = api::SubscriptionInfo::to_usd(user.wallet_quota);
+            match subscription.usage_percent() {
+                Some(pct) => format!("{} ${:.2} {:.0}%", account_name, wallet_usd, 100.0 - pct),
+                None => format!("{} ${:.2}", account_name, wallet_usd),
+            }
+        }
+        // sub2api 是后付费，没有余额，展示花了多少而不是还剩多少
+        config::Snapshot::Sub2Api { cost } => format!(
+            "{} 今${:.2} 月${:.2}",
+            account_name, cost.today_cost, cost.month_cost
+        ),
     }
 }
 
@@ -145,9 +154,18 @@ fn cmd_widget() -> Result<()> {
 fn cmd_refresh(account_name: &str) -> Result<()> {
     let account = Account::from_env()?;
     let client = api::ApiClient::new(&account)?;
-    let user_info = client.get_user_info()?;
-    let subscription = client.get_subscription()?;
-    config::save_cache(account_name, user_info, subscription)
+
+    let snapshot = match account.provider {
+        config::Provider::NewApi => config::Snapshot::NewApi {
+            user: client.get_user_info()?,
+            subscription: client.get_subscription()?,
+        },
+        config::Provider::Sub2Api => config::Snapshot::Sub2Api {
+            cost: client.get_usage()?,
+        },
+    };
+
+    config::save_cache(account_name, snapshot)
 }
 
 fn spawn_background_refresh(account_name: &str) {
